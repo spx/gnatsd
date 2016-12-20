@@ -407,6 +407,16 @@ func (w *writeDeadlineOption) Apply(server *Server) {
 	server.Noticef("Reloaded: write_deadline = %s", w.newValue)
 }
 
+// msgRateOption implements the option interface for the `msg_rate` setting.
+type msgRateOption struct {
+	noopOption
+	newValue int
+}
+
+func (m *msgRateOption) Apply(server *Server) {
+	server.Noticef("Reloaded msg_rate = %v", m.newValue)
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -518,6 +528,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &maxPingsOutOption{newValue: newValue.(int)})
 		case "writedeadline":
 			diffOpts = append(diffOpts, &writeDeadlineOption{newValue: newValue.(time.Duration)})
+		case "msgrate":
+			diffOpts = append(diffOpts, &msgRateOption{newValue: newValue.(int)})
 		case "nolog":
 			// Ignore NoLog option since it's not parsed and only used in
 			// testing.

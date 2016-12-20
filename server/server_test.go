@@ -5,8 +5,12 @@ package server
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"net"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -487,5 +491,157 @@ func TestProfilingNoTimeout(t *testing.T) {
 	}
 	if srv.WriteTimeout != 0 {
 		t.Fatalf("WriteTimeout should not be set, was set to %v", srv.WriteTimeout)
+	}
+}
+
+func TestRateLimiting(t *testing.T) {
+	// Rate limited to 100 msgs/sec
+	opts := DefaultOptions()
+	opts.MsgRate = 300
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
+		opts.Host, opts.Port),
+		nats.NoReconnect())
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+
+	msg := []byte("hello")
+	toSend := int32(150)
+	recv := int32(0)
+	ch := make(chan struct{}, 1)
+	cb := func(_ *nats.Msg) {
+		if atomic.AddInt32(&recv, 1) == 2*atomic.LoadInt32(&toSend) {
+			ch <- struct{}{}
+		}
+	}
+	sub1, err := nc.Subscribe("foo", cb)
+	if err != nil {
+		t.Fatalf("Unexpected error on subscribe: %v", err)
+	}
+	sub2, err := nc.QueueSubscribe("foo", "queue", cb)
+	if err != nil {
+		t.Fatalf("Unexpected error on subscribe: %v", err)
+	}
+	nc.Flush()
+
+	sendFunc := func(nc *nats.Conn, toSend int32) {
+		for i := 0; i < int(toSend); i++ {
+			if err := nc.Publish("foo", msg); err != nil {
+				return
+			}
+		}
+	}
+
+	go sendFunc(nc, toSend)
+	select {
+	case <-time.After(time.Second):
+	case <-ch:
+		t.Fatal("Rate should have been limited")
+	}
+	start := time.Now()
+	// We send/recv more than the rate allows, so wait for the
+	// rest to arrive.
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timed-out waiting for messages")
+	}
+	dur := time.Since(start)
+	if dur < time.Second {
+		time.Sleep(time.Second - dur + 150*time.Millisecond)
+	}
+	// Reset some vars and send some messages. The total since
+	// last rate limit would make total > rate limit, but we
+	// should not be limited since we waited more than a period.
+	atomic.StoreInt32(&recv, 0)
+	atomic.StoreInt32(&toSend, 60)
+	go sendFunc(nc, toSend)
+	select {
+	case <-time.After(time.Second):
+		t.Fatal("Rate should not have been limited")
+	case <-ch:
+	}
+	sub1.Unsubscribe()
+	sub2.Unsubscribe()
+	nc.Flush()
+	nc.Close()
+
+	// Verify that if blocking in rate limit, shuting down the server
+	// kick it out
+	var ncs [6]*nats.Conn
+	for i := 0; i < len(ncs); i++ {
+		nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
+			opts.Host, opts.Port),
+			nats.NoReconnect())
+		if err != nil {
+			t.Fatalf("Error creating client: %v\n", err)
+		}
+		cnc := nc
+		ncs[i] = cnc
+		go sendFunc(cnc, 100)
+	}
+	// Wait a bit so that we know server is blocking
+	time.Sleep(200 * time.Millisecond)
+	start = time.Now()
+	s.Shutdown()
+	dur = time.Since(start)
+	if dur > 200*time.Millisecond {
+		t.Fatalf("Shutting down the server took too long: %v", dur)
+	}
+	for _, nc := range ncs {
+		nc.Close()
+	}
+}
+
+func TestRateLimitingConfigReload(t *testing.T) {
+	conf := "msgrate.conf"
+	defer os.Remove(conf)
+
+	if err := ioutil.WriteFile(conf, []byte(`
+	listen: localhost:-1
+	msg_rate: 100
+	`), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	opts.NoLog = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+
+	// With initial rate of 100msgs/sec, sending 1000000 would take
+	// a long time. Start at this rate and then reload with unlimited
+	// rate and check that it did not take that long.
+	nc, err := nats.Connect(fmt.Sprintf("nats://localhost:%d", s.getOpts().Port))
+	if err != nil {
+		t.Fatalf("Unable to connect: %v", err)
+	}
+	defer nc.Close()
+	start := time.Now()
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < 10000; i++ {
+			nc.Publish("foo", []byte("msg"))
+		}
+	}()
+	time.Sleep(500 * time.Millisecond)
+	if err := ioutil.WriteFile(conf, []byte("listen: localhost:-1"), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error on reload: %v", err)
+	}
+	wg.Wait()
+	if dur := time.Since(start); dur > 2*time.Second {
+		t.Fatalf("Test took too long: %v", dur)
 	}
 }

@@ -251,6 +251,9 @@ max_payload: 65536
 # Duration the server can block on a socket write to a client.  Exceeding the 
 # deadline will designate a client as a slow consumer.
 write_deadline: "2s"
+
+# rate limit
+msg_rate: 100
 ```
 
 Inside configuration files, string values support the following escape characters: `\xXX, \t, \n, \r, \", \\`.  Take note that when specifying directory paths in options such as `pid_file` and `log_file` on Windows, you'll need to escape backslashes, e.g. `log_file:  "c:\\logging\\log.txt"`, or use unix style (`/`) path separators.

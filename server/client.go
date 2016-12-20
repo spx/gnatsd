@@ -110,6 +110,9 @@ type client struct {
 	last  time.Time
 	parseState
 
+	rateMaxMsgs  int64
+	rateMaxBytes int64
+
 	route *route
 	debug bool
 	trace bool
@@ -272,6 +275,11 @@ func (c *client) readLoop() {
 
 	// Snapshot server options.
 	opts := s.getOpts()
+	// Now it is safe to check opts.MsgRate since we deal with a copy
+	if int64(opts.MsgRate) != c.rateMaxMsgs {
+		c.rateMaxMsgs = int64(opts.MsgRate)
+		c.rateMaxBytes = c.rateMaxMsgs * 512
+	}
 
 	for {
 		n, err := nc.Read(b)
@@ -1016,8 +1024,9 @@ func (c *client) processMsg(msg []byte) {
 
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.cache.inMsgs += 1
-	c.cache.inBytes += len(msg) - LEN_CR_LF
+	msgSize := len(msg) - LEN_CR_LF
+	c.cache.inMsgs++
+	c.cache.inBytes += msgSize
 
 	if c.trace {
 		c.traceMsg(msg)
@@ -1075,8 +1084,15 @@ func (c *client) processMsg(msg []byte) {
 		return
 	}
 
-	var r *SublistResult
-	var ok bool
+	var (
+		doRate bool
+		r      *SublistResult
+		ok     bool
+	)
+	if c.rateMaxMsgs > 0 {
+		doRate = true
+		srv.doRateControl(c.rateMaxMsgs, c.rateMaxBytes, int64(msgSize))
+	}
 
 	genid := atomic.LoadUint64(&srv.sl.genid)
 
@@ -1175,6 +1191,9 @@ func (c *client) processMsg(msg []byte) {
 		// Normal delivery
 		mh := c.msgHeader(msgh[:si], sub)
 		c.deliverMsg(sub, mh, msg)
+		if doRate {
+			srv.doRateControl(c.rateMaxMsgs, c.rateMaxBytes, int64(msgSize))
+		}
 	}
 
 	// Now process any queue subs we have if not a route
@@ -1192,6 +1211,9 @@ func (c *client) processMsg(msg []byte) {
 			if sub != nil {
 				mh := c.msgHeader(msgh[:si], sub)
 				c.deliverMsg(sub, mh, msg)
+				if doRate {
+					srv.doRateControl(c.rateMaxMsgs, c.rateMaxBytes, int64(msgSize))
+				}
 			}
 		}
 	}

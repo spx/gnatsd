@@ -73,6 +73,7 @@ type Options struct {
 	TLSCaCert      string        `json:"-"`
 	TLSConfig      *tls.Config   `json:"-"`
 	WriteDeadline  time.Duration `json:"-"`
+	MsgRate        int           `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -302,6 +303,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				o.WriteDeadline = time.Duration(v.(int64)) * time.Second
 				fmt.Printf("WARNING: write_deadline should be converted to a duration\n")
 			}
+		case "msg_rate", "msgs_rate":
+			o.MsgRate = int(v.(int64))
 		}
 	}
 	return nil
@@ -762,6 +765,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
 	}
+	if flagOpts.MsgRate != 0 {
+		opts.MsgRate = flagOpts.MsgRate
+	}
 	return &opts
 }
 
@@ -982,6 +988,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
 	fs.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	fs.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
+	fs.IntVar(&opts.MsgRate, "msg_rate", 0, "Maximum message rate (server wide)")
 
 	// The flags definition above set "default" values to some of the options.
 	// Calling Parse() here will override the default options with any value
