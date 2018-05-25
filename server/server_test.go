@@ -426,7 +426,6 @@ func TestWriteDeadline(t *testing.T) {
 	defer sender.Close()
 
 	payload := make([]byte, 1000000)
-	start := time.Now()
 	for i := 0; i < 10; i++ {
 		if err := sender.Publish("foo", payload); err != nil {
 			t.Fatalf("Error on publish: %v", err)
@@ -435,13 +434,6 @@ func TestWriteDeadline(t *testing.T) {
 	// Flush sender connection to ensure that all data has been sent.
 	if err := sender.Flush(); err != nil {
 		t.Fatalf("Error on flush: %v", err)
-	}
-
-	dur := time.Since(start)
-	// Use more than the write deadline to account for calls
-	// overhead, running with -race, etc...
-	if dur > 110*time.Millisecond {
-		t.Fatalf("Flush should have returned sooner, took: %v", dur)
 	}
 
 	// At this point server should have closed connection c.
